@@ -1,16 +1,84 @@
 /*************************
+ * JURIS-AI Frontend JavaScript (OPTIMIZED & FIXED)
+ * 
+
+/*************************
  * GLOBAL CONFIG
  *************************/
-const API_BASE = "https://juris-backend-glpe.onrender.com";
+
+
+const API_BASE = (() => {
+  // Check if we're in production (HTTPS) or development (HTTP)
+  const hostname = window.location.hostname;
+  
+  // Production
+  if (hostname.includes('netlify.app') || hostname.includes('vercel.app')) {
+    return 'https://juris-backend-glpe.onrender.com'; // Replace with your actual backend URL
+  }
+  
+  // Local development
+  return 'http://127.0.0.1:8000';
+})();
+
+// Request state management (prevents duplicate requests)
+let isRequestInProgress = false;
+
+// Constants
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_RETRY_ATTEMPTS = 2;
+
+
+/*************************
+ * UTILITY FUNCTIONS
+ *************************/
+
+/**
+ * Safely escapes HTML to prevent XSS attacks
+ */
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+/**
+ * Validates file size before upload
+ */
+function validateFileSize(file) {
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    alert(`File too large! Maximum size is ${MAX_FILE_SIZE_MB}MB`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Gets verbosity level from UI
+ * ✅ FIXED: Properly extracts selected verbosity
+ */
+function getVerbosityLevel() {
+  const selected = document.querySelector('input[name="verbosity"]:checked');
+  return selected ? selected.value : 'basic';
+}
+
+/**
+ * Disables/enables buttons to prevent duplicate requests
+ */
+function setButtonState(disabled) {
+  const buttons = document.querySelectorAll('.btn');
+  buttons.forEach(btn => {
+    btn.disabled = disabled;
+    btn.style.opacity = disabled ? '0.6' : '1';
+    btn.style.cursor = disabled ? 'not-allowed' : 'pointer';
+  });
+}
+
 
 /*************************
  * LANGUAGE SELECTION
- * 
- * 
- * 
- * 
- * 
  *************************/
+
 const translations = {
   English: {
     /* ===== INDEX / COMMON ===== */
@@ -59,6 +127,7 @@ const translations = {
     law_applied: "Law Applied",
     law_source: "Source: Government of India",
     next_steps: "What you should do",
+    final_summary_title: "Final Decision Summary",
     references: "References",
 
     /* ===== BUTTONS ===== */
@@ -107,6 +176,7 @@ const translations = {
     law_applied: "लागू कानून",
     law_source: "स्रोत: भारत सरकार",
     next_steps: "अब आपको क्या करना चाहिए",
+    final_summary_title: "अंतिम निर्णय सारांश",
     references: "संदर्भ",
 
     copy: "कॉपी करें",
@@ -154,6 +224,7 @@ const translations = {
     law_applied: "लागू कायदा",
     law_source: "स्रोत: भारत सरकार",
     next_steps: "आता काय करावे",
+    final_summary_title: "अंतिम निर्णय सारांश",
     references: "संदर्भ",
 
     copy: "कॉपी करा",
@@ -201,6 +272,7 @@ const translations = {
     law_applied: "వర్తించే చట్టం",
     law_source: "మూలం: భారత ప్రభుత్వం",
     next_steps: "మీరు చేయాల్సినది",
+    final_summary_title: "చివరి నిర్ణయ సారాంశం",
     references: "సూచనలు",
 
     copy: "కాపీ చేయండి",
@@ -248,13 +320,13 @@ const translations = {
     law_applied: "பயன்படும் சட்டம்",
     law_source: "மூலம்: இந்திய அரசு",
     next_steps: "நீங்கள் செய்ய வேண்டியது",
+    final_summary_title: "இறுதி முடிவு சுருக்கம்",
     references: "ஆதாரங்கள்",
 
     copy: "நகலெடுக்க",
     print: "அச்சிடு"
   }
 };
-
 
 
 /*************************
@@ -280,11 +352,13 @@ const FALLBACK_REFERENCES = [
 ];
 
 
+/*************************
+ * LANGUAGE FUNCTIONS
+ *************************/
 
-
-// LANGUAGE CHANGE FUNCTIONS
-
-
+/**
+ * Applies translations to all elements with data-i18n attribute
+ */
 function applyLanguage(lang) {
   const dictionary = translations[lang];
   if (!dictionary) return;
@@ -295,17 +369,31 @@ function applyLanguage(lang) {
       el.innerText = dictionary[key];
     }
   });
+
+  // Update placeholder attributes
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+    const key = el.getAttribute("data-i18n-placeholder");
+    if (dictionary[key]) {
+      el.placeholder = dictionary[key];
+    }
+  });
 }
 
-
+/**
+ * Handles language change from dropdown
+ */
 function onLanguageChange() {
-  const lang = document.getElementById("language").value;
+  const langSelect = document.getElementById("language");
+  if (!langSelect) return;
+  
+  const lang = langSelect.value;
   localStorage.setItem("selectedLanguage", lang);
   applyLanguage(lang);
 }
 
-
-
+/**
+ * Navigates to action page after language selection
+ */
 function goNext() {
   const langSelect = document.getElementById("language");
   if (!langSelect) return;
@@ -315,25 +403,35 @@ function goNext() {
 }
 
 
-
+/*************************
+ * FILE INPUT HANDLER
+ *************************/
 document.addEventListener("DOMContentLoaded", () => {
   const fileInput = document.getElementById("documentFile");
   const fileNameText = document.getElementById("fileName");
 
-  if (!fileInput || !fileNameText) return;
-
-  fileInput.addEventListener("change", () => {
-    if (fileInput.files.length > 0) {
-      fileNameText.innerText = "Selected: " + fileInput.files[0].name;
-    } else {
-      fileNameText.innerText = "";
-    }
-  });
+  if (fileInput && fileNameText) {
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        fileNameText.innerText = `Selected: ${file.name}`;
+        
+        // Validate file size
+        if (!validateFileSize(file)) {
+          fileInput.value = '';
+          fileNameText.innerText = '';
+        }
+      } else {
+        fileNameText.innerText = "";
+      }
+    });
+  }
 });
 
 
-
-
+/*************************
+ * INITIALIZATION
+ *************************/
 document.addEventListener("DOMContentLoaded", () => {
   const savedLang = localStorage.getItem("selectedLanguage") || "English";
 
@@ -349,86 +447,176 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show language text if exists
   const langText = document.getElementById("langText");
   if (langText) {
-    langText.innerText = "Language: " + savedLang;
+    langText.innerText = `Language: ${savedLang}`;
   }
 });
 
+
 /*************************
- * LOADER (SAFE)
+ * LOADER FUNCTIONS (IMPROVED)
  *************************/
+
+/**
+ * Shows loading overlay with custom message
+ */
 function showLoader(message = "Please wait...") {
   const loader = document.getElementById("loader");
   const text = document.getElementById("loaderText");
 
-  if (!loader) return; // ✅ prevents crash
+  if (!loader) return;
 
   if (text) text.innerText = message;
   loader.classList.remove("hidden");
+  
+  // Disable all buttons
+  setButtonState(true);
 }
 
+/**
+ * Hides loading overlay
+ */
 function hideLoader() {
   const loader = document.getElementById("loader");
   if (!loader) return;
+  
   loader.classList.add("hidden");
+  
+  // Re-enable all buttons
+  setButtonState(false);
 }
 
+
 /*************************
- * TEXT INPUT
+ * API REQUEST WRAPPER (NEW)
  *************************/
-function saveProblem() {
+
+/**
+ * Makes API request with retry logic and better error handling
+ * ✅ NEW: Centralized API call function
+ */
+async function makeApiRequest(url, formData, retryCount = 0) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Server error: ${response.status}`);
+    }
+
+    return await response.json();
+    
+  } catch (error) {
+    // Retry logic for network errors
+    if (retryCount < MAX_RETRY_ATTEMPTS && error.message.includes('fetch')) {
+      console.log(`Retrying... Attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS}`);
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      return makeApiRequest(url, formData, retryCount + 1);
+    }
+    
+    throw error;
+  }
+}
+
+
+/*************************
+ * TEXT INPUT HANDLER
+ * ✅ FIXED: Now properly sends verbosity parameter
+ *************************/
+
+/**
+ * Analyzes user-typed problem text
+ */
+async function saveProblem() {
+  // Prevent duplicate requests
+  if (isRequestInProgress) {
+    console.log("Request already in progress");
+    return;
+  }
+
   const input = document.getElementById("userProblem");
   if (!input) return;
 
   const text = input.value.trim();
+  
+  // Validate input
   if (!text) {
-    alert("Please write your problem");
+    alert("Please write your problem first");
     return;
   }
 
+  if (text.length < 10) {
+    alert("Please provide more details about your problem");
+    return;
+  }
+
+  isRequestInProgress = true;
   const lang = localStorage.getItem("selectedLanguage") || "English";
+  
+  // ✅ FIXED: Get verbosity from UI
+  const verbosity = getVerbosityLevel();
 
-  showLoader("Checking the law for you...");
+  showLoader("Analyzing your legal issue...");
 
-  const formData = new FormData();
-  formData.append("problem", text);
-  formData.append("language", lang);
+  try {
+    // Build form data
+    const formData = new FormData();
+    formData.append("problem", text);
+    formData.append("language", lang);
+    formData.append("verbosity", verbosity); // ✅ NOW PROPERLY SENT
 
-  fetch(`${API_BASE}/api/analyze-text`, {
-    method: "POST",
-    body: formData
-  })
-    .then(res => res.json())
-    .then(data => {
-      hideLoader();
-      localStorage.setItem("aiResult", JSON.stringify(data)); // ✅ FIX
-      window.location.href = "result.html";
-    })
-    .catch(err => {
-      hideLoader();
-      alert("Something went wrong. Please try again.");
-      console.error(err);
-    });
+    console.log(`Sending request: lang=${lang}, verbosity=${verbosity}`);
+
+    // Make API call with retry
+    const data = await makeApiRequest(`${API_BASE}/api/analyze-text`, formData);
+
+    // Save and navigate
+    localStorage.setItem("aiResult", JSON.stringify(data));
+    window.location.href = "result.html";
+    
+  } catch (error) {
+    hideLoader();
+    console.error("Error:", error);
+    
+    // User-friendly error messages
+    if (error.message.includes('fetch')) {
+      alert("Network error. Please check your internet connection and try again.");
+    } else {
+      alert(`Analysis failed: ${error.message}`);
+    }
+    
+  } finally {
+    isRequestInProgress = false;
+  }
 }
 
+
 /*************************
- * VOICE INPUT
+ * VOICE INPUT HANDLER
+ * ✅ FIXED: Now properly sends verbosity parameter
  *************************/
-/*************************
- * VOICE INPUT (FIXED)
- *************************/
+
 let recognition;
 let isRecording = false;
 let finalTranscript = "";
 
+/**
+ * Initializes voice recognition
+ */
 function initVoiceRecognition() {
   const micBtn = document.getElementById("micButton");
   if (!micBtn) return;
 
+  // Check browser support
   if (!("webkitSpeechRecognition" in window)) {
-    alert("Voice input not supported in this browser");
+    alert("Voice input not supported in this browser. Please use Chrome or Edge.");
+    micBtn.style.display = "none";
     return;
   }
 
+  // Language mapping for speech recognition
   const langMap = {
     English: "en-IN",
     Hindi: "hi-IN",
@@ -438,232 +626,305 @@ function initVoiceRecognition() {
   };
 
   recognition = new webkitSpeechRecognition();
-  recognition.lang = langMap[localStorage.getItem("selectedLanguage")] || "en-IN";
+  const selectedLang = localStorage.getItem("selectedLanguage") || "English";
+  recognition.lang = langMap[selectedLang] || "en-IN";
   recognition.interimResults = true;
   recognition.continuous = false;
+  recognition.maxAlternatives = 1;
 
   recognition.onresult = (event) => {
     let interim = "";
+    
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      const text = event.results[i][0].transcript;
+      const transcript = event.results[i][0].transcript;
+      
       if (event.results[i].isFinal) {
-        finalTranscript += text + " ";
+        finalTranscript += transcript + " ";
       } else {
-        interim += text;
+        interim += transcript;
       }
     }
 
-    const spoken = document.getElementById("spokenText");
-    const status = document.getElementById("voiceStatus");
-    if (spoken) spoken.innerText = finalTranscript + interim;
-    if (status) status.innerText = "Listening… speak naturally. Press Continue when done.";
+    // Update UI
+    const spokenEl = document.getElementById("spokenText");
+    const statusEl = document.getElementById("voiceStatus");
+    
+    if (spokenEl) {
+      spokenEl.innerText = finalTranscript + interim;
+    }
+    
+    if (statusEl) {
+      statusEl.innerText = "Listening... Speak naturally.";
+    }
   };
 
-  recognition.onerror = () => {
+  recognition.onerror = (event) => {
+    console.error("Speech recognition error:", event.error);
     stopRecordingUI();
+    
+    if (event.error === 'no-speech') {
+      alert("No speech detected. Please try again.");
+    } else if (event.error === 'not-allowed') {
+      alert("Microphone access denied. Please enable it in your browser settings.");
+    }
   };
 
   recognition.onend = () => {
-    if (isRecording) recognition.start(); // ✅ auto-continue on silence
+    if (isRecording) {
+      // Auto-restart if still recording
+      try {
+        recognition.start();
+      } catch (e) {
+        console.log("Recognition restart failed:", e);
+      }
+    }
   };
 }
 
+// Initialize on page load
 document.addEventListener("DOMContentLoaded", initVoiceRecognition);
 
+/**
+ * Toggles voice recording on/off
+ */
 function toggleRecording() {
   const micBtn = document.getElementById("micButton");
-  const status = document.getElementById("voiceStatus");
+  const statusEl = document.getElementById("voiceStatus");
 
   if (!isRecording) {
+    // Start recording
     finalTranscript = "";
     isRecording = true;
-    recognition.start();
-    micBtn.classList.add("recording");
-    if (status) status.innerText = "Listening...";
+    
+    try {
+      recognition.start();
+      micBtn.classList.add("recording");
+      if (statusEl) statusEl.innerText = "Listening...";
+    } catch (e) {
+      console.error("Failed to start recognition:", e);
+      stopRecordingUI();
+    }
+    
   } else {
+    // Stop recording
     isRecording = false;
     recognition.stop();
     stopRecordingUI();
   }
 }
 
+/**
+ * Updates UI when recording stops
+ */
 function stopRecordingUI() {
   const micBtn = document.getElementById("micButton");
-  const status = document.getElementById("voiceStatus");
+  const statusEl = document.getElementById("voiceStatus");
+  
   if (micBtn) micBtn.classList.remove("recording");
-  if (status) status.innerText = "Review text and press Continue";
+  if (statusEl) statusEl.innerText = "Review your text and press Continue";
 }
 
-function saveVoiceText() {
+/**
+ * Sends voice input for analysis
+ * ✅ FIXED: Now properly sends verbosity parameter
+ */
+async function saveVoiceText() {
+  // Prevent duplicate requests
+  if (isRequestInProgress) return;
+
   const cleanedText = finalTranscript.replace(/\s+/g, " ").trim();
+  
+  // Validate input
   if (!cleanedText) {
     alert("Please speak your problem first");
     return;
   }
 
+  if (cleanedText.length < 10) {
+    alert("Please provide more details. Speak longer.");
+    return;
+  }
+
+  isRequestInProgress = true;
   const lang = localStorage.getItem("selectedLanguage") || "English";
-  showLoader("Understanding your voice...");
+  
+  // ✅ FIXED: Get verbosity from UI
+  const verbosity = getVerbosityLevel();
 
-  const formData = new FormData();
-  formData.append("problem", cleanedText);
-  formData.append("language", lang);
+  showLoader("Analyzing your voice input...");
 
-  fetch(`${API_BASE}/api/analyze-text`, { method: "POST", body: formData })
-    .then(res => res.json())
-    .then(data => {
-      hideLoader();
-      localStorage.setItem("aiResult", JSON.stringify(data));
-      window.location.href = "result.html";
-    })
-    .catch(() => {
-      hideLoader();
-      alert("Voice processing failed");
-    });
+  try {
+    // Build form data
+    const formData = new FormData();
+    formData.append("problem", cleanedText);
+    formData.append("language", lang);
+    formData.append("verbosity", verbosity); // ✅ NOW PROPERLY SENT
+
+    console.log(`Sending request: lang=${lang}, verbosity=${verbosity}`);
+
+    // Make API call with retry
+    const data = await makeApiRequest(`${API_BASE}/api/analyze-text`, formData);
+
+    // Save and navigate
+    localStorage.setItem("aiResult", JSON.stringify(data));
+    window.location.href = "result.html";
+    
+  } catch (error) {
+    hideLoader();
+    console.error("Error:", error);
+    alert(`Voice processing failed: ${error.message}`);
+    
+  } finally {
+    isRequestInProgress = false;
+  }
 }
 
 
-
 /*************************
- * DOCUMENT UPLOAD
+ * DOCUMENT UPLOAD HANDLER
+ * ✅ FIXED: Now properly sends verbosity parameter
  *************************/
-function saveDocument() {
+
+/**
+ * Uploads and analyzes document
+ */
+async function saveDocument() {
+  // Prevent duplicate requests
+  if (isRequestInProgress) return;
+
   const input = document.getElementById("documentFile");
 
   if (!input || !input.files.length) {
-    alert("Please upload a document");
+    alert("Please upload a document first");
     return;
   }
 
   const file = input.files[0];
+  
+  // Validate file type
   const allowedTypes = [
     "image/jpeg",
     "image/png",
+    "image/jpg",
+    "image/webp",
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ];
 
   if (!allowedTypes.includes(file.type)) {
-    alert("Unsupported file type. Please upload image, PDF, or Word file.");
+    alert("Unsupported file type. Please upload: JPG, PNG, PDF, or Word file.");
     return;
   }
 
-  showLoader("Reading your document...");
+  // Validate file size
+  if (!validateFileSize(file)) {
+    return;
+  }
 
-  const formData = new FormData();
-  formData.append("file", file);
+  isRequestInProgress = true;
   const lang = localStorage.getItem("selectedLanguage") || "English";
-  formData.append("language", lang);
+  
+  // ✅ FIXED: Get verbosity from UI
+  const verbosity = getVerbosityLevel();
 
+  showLoader("Analyzing your document...");
 
-  fetch(`${API_BASE}/api/analyze-image`, {
-    method: "POST",
-    body: formData
-  })
-    .then(res => res.json())
-    .then(data => {
-      hideLoader();
-      localStorage.setItem("aiResult", JSON.stringify(data));
-      window.location.href = "result.html";
-    })
-    .catch(err => {
-      hideLoader();
-      alert("Document analysis failed");
-      console.error(err);
-    });
+  try {
+    // Build form data
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("language", lang);
+    formData.append("verbosity", verbosity); // ✅ NOW PROPERLY SENT
+
+    console.log(`Sending request: file=${file.name}, lang=${lang}, verbosity=${verbosity}`);
+
+    // Make API call with retry
+    const data = await makeApiRequest(`${API_BASE}/api/analyze-image`, formData);
+
+    // Save and navigate
+    localStorage.setItem("aiResult", JSON.stringify(data));
+    window.location.href = "result.html";
+    
+  } catch (error) {
+    hideLoader();
+    console.error("Error:", error);
+    
+    // User-friendly error messages
+    if (error.message.includes('413')) {
+      alert(`File too large! Maximum size is ${MAX_FILE_SIZE_MB}MB`);
+    } else if (error.message.includes('fetch')) {
+      alert("Network error. Please check your internet connection.");
+    } else {
+      alert(`Document analysis failed: ${error.message}`);
+    }
+    
+  } finally {
+    isRequestInProgress = false;
+  }
 }
 
 
 /*************************
- * RESULT PAGE
+ * RESULT PAGE RENDERING
  *************************/
-document.addEventListener("DOMContentLoaded", () => {
-  const summary = document.getElementById("summaryText");
-  if (!summary) return; // ✅ only result page
 
-  const raw = localStorage.getItem("aiResult");
-  if (!raw || raw === "undefined") {
-    summary.innerText = "No result found. Please try again.";
-    return;
-  }
-
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    summary.innerText = "Error reading result.";
-    return;
-  }
-
-  summary.innerText = data.summary || "No summary available";
-
-  renderRisk(data.risk_level, data.risk_score);
-
-  fillList("redFlags", data.red_flags);
-  fillList("lawList", data.laws);
-  fillList("nextSteps", data.actions);
-  fillList("finalSummary", data.final_summary);
-  fillReferences("references", data.references);
-});
-
-
-
+/**
+ * Fills a list element with array data
+ * ✅ IMPROVED: Better handling of different data formats
+ */
 function fillList(id, items = []) {
   const ul = document.getElementById(id);
   if (!ul) return;
 
   ul.innerHTML = "";
 
+  // Handle empty or invalid data
   if (!Array.isArray(items) || items.length === 0) {
     const li = document.createElement("li");
-    li.innerText = "No information available.";
+    li.textContent = "No information available.";
     ul.appendChild(li);
     return;
   }
 
+  // Process each item
   items.forEach(item => {
     const li = document.createElement("li");
     let text = "";
 
-    // -------- RED FLAGS --------
+    // Handle different data formats
     if (item.title && item.reason) {
+      // Red flags format
       text = `${item.title}: ${item.reason}`;
-    }
-
-    // -------- ACTIONS --------
-    else if (item.step && item.why) {
+    } else if (item.step && item.why) {
+      // Actions format
       text = `${item.step} – ${item.why}`;
-    }
-
-    // -------- LAW OBJECT --------
-    else if (item.act && item.section) {
+    } else if (item.act && item.section) {
+      // Law format
       text = `${item.act} (${item.section})`;
       if (item.explanation) {
         text += ` – ${item.explanation}`;
       }
-    }
-
-    // -------- SIMPLE STRING --------
-    else if (typeof item === "string") {
+    } else if (typeof item === "string") {
+      // Simple string
       text = item;
-    }
-
-    // -------- FALLBACK --------
-    else if (item.text) {
+    } else if (item.text) {
+      // Fallback text property
       text = item.text;
     }
 
-    // Render only meaningful content
-    if (text.trim() !== "") {
-      li.innerText = text;
+    // Only add meaningful content
+    if (text.trim()) {
+      li.textContent = text; // Use textContent for XSS safety
       ul.appendChild(li);
     }
   });
 }
 
-
-
-
+/**
+ * Fills references list with links
+ * ✅ IMPROVED: Better reference parsing
+ */
 function fillReferences(id, refs = []) {
   const ul = document.getElementById(id);
   if (!ul) return;
@@ -672,17 +933,31 @@ function fillReferences(id, refs = []) {
 
   let finalRefs = [];
 
-  // 1️⃣ Accept backend references (new object format)
+  // Parse references from different formats
   if (Array.isArray(refs)) {
     refs.forEach(ref => {
-      if (typeof ref === "object" && ref.url) {
+      if (typeof ref === "string") {
+        // Parse "URL - Title" format
+        const parts = ref.split(' - ');
+        if (parts.length >= 2) {
+          finalRefs.push({
+            url: parts[0].trim(),
+            title: parts.slice(1).join(' - ').trim()
+          });
+        } else if (ref.startsWith('http')) {
+          finalRefs.push({
+            url: ref,
+            title: ref
+          });
+        }
+      } else if (typeof ref === "object" && ref.url) {
         finalRefs.push(ref);
       }
     });
   }
 
-  // 2️⃣ Ensure minimum 2 references (fallback safety)
-  if (finalRefs.length < 4) { 
+  // Add fallback references if needed
+  if (finalRefs.length < 2) {
     FALLBACK_REFERENCES.forEach(fallback => {
       if (!finalRefs.some(r => r.url === fallback.url)) {
         finalRefs.push(fallback);
@@ -690,59 +965,88 @@ function fillReferences(id, refs = []) {
     });
   }
 
-  // 3️⃣ Render references
-  finalRefs.slice(0, 4).forEach(ref => {
+  // Render references (max 5)
+  finalRefs.slice(0, 5).forEach(ref => {
     const li = document.createElement("li");
     const a = document.createElement("a");
 
     a.href = ref.url;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.innerText = ref.title;
+    a.textContent = ref.title || ref.url;
 
     li.appendChild(a);
     ul.appendChild(li);
   });
 }
 
-
-
+/**
+ * Renders risk indicator (kept from original)
+ */
 function renderRisk(riskLevel, riskScore) {
   const badge = document.getElementById("riskBadge");
   const scoreText = document.getElementById("riskScoreText");
 
   if (!badge || riskScore == null) return;
 
+  // Set badge text
   badge.innerText =
     riskLevel === "LOW" ? "SAFE" :
     riskLevel === "MEDIUM" ? "RISKY" :
     "HIGH RISK – AVOID";
 
+  // Remove old classes
   badge.classList.remove("risk-low", "risk-medium", "risk-high");
 
+  // Add appropriate class
   if (riskLevel === "LOW") badge.classList.add("risk-low");
   if (riskLevel === "MEDIUM") badge.classList.add("risk-medium");
   if (riskLevel === "HIGH") badge.classList.add("risk-high");
 
-  scoreText.innerText = `Risk Score: ${riskScore}%`;
+  // Set score text
+  if (scoreText) {
+    scoreText.innerText = `Risk Score: ${riskScore}%`;
+  }
 }
 
-
+/**
+ * Copies result summary to clipboard
+ */
 function copyResult() {
   const summary = document.getElementById("summaryText");
   if (!summary) return;
 
-  navigator.clipboard.writeText(summary.innerText);
-  alert("Copied to clipboard");
+  const text = summary.textContent;
+  
+  // Modern clipboard API
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text)
+      .then(() => alert("Copied to clipboard!"))
+      .catch(() => alert("Failed to copy"));
+  } else {
+    // Fallback for older browsers
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textarea);
+    alert("Copied to clipboard!");
+  }
 }
 
 
 /*************************
- * GLOBAL SPEAKER CONTROLLER
+ * TEXT-TO-SPEECH (SPEAKER)
+ * ✅ FIXED: Better memory management
  *************************/
+
 let activeUtterance = null;
 let activeSpeakerBtn = null;
 
+/**
+ * Toggles text-to-speech for a section
+ */
 function toggleSpeak(button) {
   const targetId = button.getAttribute("data-speak-target");
   if (!targetId) return;
@@ -752,33 +1056,35 @@ function toggleSpeak(button) {
 
   let text = "";
 
-  // Handle list vs paragraph
+  // Extract text based on element type
   if (targetEl.tagName === "UL") {
     text = Array.from(targetEl.querySelectorAll("li"))
-      .map(li => li.innerText)
+      .map(li => li.textContent)
       .join(". ");
   } else {
-    text = targetEl.innerText;
+    text = targetEl.textContent;
   }
 
   text = text.trim();
+  
   if (!text) {
     alert("Nothing to read here.");
     return;
   }
 
-  // 🔁 If same button clicked again → stop
+  // If same button clicked again, stop
   if (activeSpeakerBtn === button) {
     stopSpeaking();
     return;
   }
 
-  // 🛑 Stop any existing speech
+  // Stop any existing speech
   stopSpeaking();
 
-  // 🎙️ Create new speech
+  // Create new speech
   const utterance = new SpeechSynthesisUtterance(text);
 
+  // Language mapping
   const langMap = {
     English: "en-IN",
     Hindi: "hi-IN",
@@ -789,13 +1095,15 @@ function toggleSpeak(button) {
 
   const selectedLang = localStorage.getItem("selectedLanguage") || "English";
   utterance.lang = langMap[selectedLang] || "en-IN";
-  utterance.rate = 0.99;
+  utterance.rate = 0.95;
   utterance.pitch = 1;
 
+  // Clean up when finished
   utterance.onend = () => {
     stopSpeaking();
   };
 
+  // Start speaking
   activeUtterance = utterance;
   activeSpeakerBtn = button;
   button.classList.add("active");
@@ -803,6 +1111,9 @@ function toggleSpeak(button) {
   window.speechSynthesis.speak(utterance);
 }
 
+/**
+ * Stops active speech
+ */
 function stopSpeaking() {
   if (activeUtterance) {
     window.speechSynthesis.cancel();
@@ -815,31 +1126,37 @@ function stopSpeaking() {
   }
 }
 
-
-
+// Clean up speech on page unload (prevent memory leak)
+window.addEventListener("beforeunload", () => {
+  stopSpeaking();
+});
 
 
 /*************************
- * RISK ANIMATION LOGIC
+ * RISK SCORE ANIMATION
  *************************/
+
+/**
+ * Animates risk score counting up
+ */
 function animateRiskScore(targetScore, riskLevel) {
   const scoreElement = document.getElementById("riskScoreText");
   const badgeElement = document.getElementById("riskBadge");
-  const cardElement = document.querySelector(".risk-card");
 
   if (!scoreElement || !badgeElement) return;
 
-  // 1. Reset state
+  // Animation parameters
   let currentScore = 0;
-  const duration = 1500; // 1.5 seconds animation
-  const intervalTime = 20; 
+  const duration = 1500; // 1.5 seconds
+  const intervalTime = 20;
   const steps = duration / intervalTime;
   const increment = targetScore / steps;
 
+  // Initial state
   badgeElement.innerText = "CALCULATING...";
-  badgeElement.className = "risk-badge"; // Remove colors initially
+  badgeElement.className = "risk-badge";
 
-  // 2. Animate Numbers
+  // Animate counter
   const timer = setInterval(() => {
     currentScore += increment;
     
@@ -853,34 +1170,36 @@ function animateRiskScore(targetScore, riskLevel) {
   }, intervalTime);
 }
 
+/**
+ * Finalizes risk UI after animation
+ */
 function finalizeRiskUI(level, score) {
   const badge = document.getElementById("riskBadge");
   const card = document.querySelector(".risk-card");
   
-  // 3. Remove old classes
+  if (!badge) return;
+
+  // Remove old classes
   badge.classList.remove("risk-low", "risk-medium", "risk-high");
   
-  // 4. Apply Logic based on User Requirements
-  // Green = Safe
-  // Yellow = Moderate (1-2 Critical issues)
-  // Red = High (>2 Critical issues)
-
+  // Apply appropriate styling
   if (level === "LOW") {
     badge.innerText = "SAFE (NO RISK)";
-    badge.classList.add("risk-low"); // Bright Green
-    if(card) card.style.borderColor = "var(--success)";
+    badge.classList.add("risk-low");
+    if (card) card.style.borderColor = "var(--success)";
   
   } else if (level === "MEDIUM") {
     badge.innerText = "MODERATE RISK";
-    badge.classList.add("risk-medium"); // Bright Yellow
-    if(card) card.style.borderColor = "var(--warning)";
+    badge.classList.add("risk-medium");
+    if (card) card.style.borderColor = "var(--warning)";
   
   } else {
     badge.innerText = "HIGH RISK - WARNING";
-    badge.classList.add("risk-high"); // Bright Red
-    if(card) card.style.borderColor = "var(--danger)";
+    badge.classList.add("risk-high");
+    if (card) card.style.borderColor = "var(--danger)";
   }
 }
+
 
 /*************************
  * RESULT PAGE INITIALIZATION
@@ -890,28 +1209,32 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!summary) return; // Only run on result page
 
   const raw = localStorage.getItem("aiResult");
+  
   if (!raw || raw === "undefined") {
-    summary.innerText = "No result found. Please try again.";
+    summary.textContent = "No result found. Please try again.";
     return;
   }
 
   let data;
   try {
     data = JSON.parse(raw);
-  } catch {
-    summary.innerText = "Error reading result.";
+  } catch (e) {
+    console.error("Failed to parse result:", e);
+    summary.textContent = "Error reading result.";
     return;
   }
 
-  summary.innerText = data.summary || "No summary available";
+  // Populate summary
+  summary.textContent = data.summary || "No summary available";
 
-  // Get Score & Level from Backend (AI Logic)
-  const score = data.risk_score !== undefined ? data.risk_score : 0; 
+  // Get risk data
+  const score = data.risk_score !== undefined ? data.risk_score : 0;
   const level = data.risk_level || "LOW";
   
-  // Start Animation
+  // Start animation
   animateRiskScore(score, level);
 
+  // Fill all sections
   fillList("redFlags", data.red_flags);
   fillList("lawList", data.laws);
   fillList("nextSteps", data.actions);
@@ -919,44 +1242,55 @@ document.addEventListener("DOMContentLoaded", () => {
   fillReferences("references", data.references);
 });
 
-// ... (Keep the rest of your file: fillList, toggleSpeak, etc.) ...
 
-/* =====================================================
-   Output Detail Level (Verbosity) – Additive Support
-   ===================================================== */
+/*************************
+ * VERBOSITY LEVEL PERSISTENCE
+ * ✅ FIXED: Proper saving and loading
+ *************************/
+(function () {
+  const STORAGE_KEY = "output_detail_level";
 
-   (function () {
-    const STORAGE_KEY = "output_detail_level";
-  
-    // Default to basic if not set
-    if (!localStorage.getItem(STORAGE_KEY)) {
-      localStorage.setItem(STORAGE_KEY, "basic");
-    }
-  
-    // Restore selection on page load
-    document.addEventListener("DOMContentLoaded", () => {
-      const savedLevel = localStorage.getItem(STORAGE_KEY) || "basic";
-      const radios = document.querySelectorAll('input[name="verbosity"]');
-  
-      radios.forEach(radio => {
-        if (radio.value === savedLevel) {
-          radio.checked = true;
-        }
-  
-        radio.addEventListener("change", () => {
-          localStorage.setItem(STORAGE_KEY, radio.value);
-        });
+  // Set default if not exists
+  if (!localStorage.getItem(STORAGE_KEY)) {
+    localStorage.setItem(STORAGE_KEY, "basic");
+  }
+
+  // Restore selection on page load
+  document.addEventListener("DOMContentLoaded", () => {
+    const savedLevel = localStorage.getItem(STORAGE_KEY) || "basic";
+    const radios = document.querySelectorAll('input[name="verbosity"]');
+
+    radios.forEach(radio => {
+      // Restore saved value
+      if (radio.value === savedLevel) {
+        radio.checked = true;
+      }
+
+      // Save on change
+      radio.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEY, radio.value);
+        console.log(`Verbosity changed to: ${radio.value}`);
       });
     });
-  
-    // Optional helper (non-breaking, safe to ignore if unused)
-    window.getOutputDetailLevel = function () {
-      return localStorage.getItem(STORAGE_KEY) || "basic";
-    };
-  })();
-  
+  });
+
+  // Helper function (accessible globally if needed)
+  window.getOutputDetailLevel = function () {
+    return localStorage.getItem(STORAGE_KEY) || "basic";
+  };
+})();
 
 
-
-
-
+/*************************
+ * CONSOLE INFO
+ *************************/
+console.log(`
+╔═══════════════════════════════════════╗
+║     JURIS-AI Frontend v6.0           ║
+║     Legal Analysis Platform           ║
+╠═══════════════════════════════════════╣
+║ API Endpoint: ${API_BASE}             
+║ Features: Multi-language, Voice,      ║
+║           Document Upload, TTS        ║
+╚═══════════════════════════════════════╝
+`);
